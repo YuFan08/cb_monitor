@@ -1,0 +1,53 @@
+# Runtime configuration and secrets
+.env
+.env.*
+!.env.example
+cookies.txt
+*cookies*.txt
+
+# uv / Python environments
+.venv/
+venv/
+env/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.ruff_cache/
+.pytest_cache/
+.pytest-tmp/
+.pyright/
+
+# Test and coverage output
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+junit.xml
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.m3u8.tmp
+
+# Local editor / OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+Desktop.ini
+
+# Generated media artifacts
+*.mp4
+*.mkv
+*.ts
+*.part
