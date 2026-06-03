@@ -60,6 +60,19 @@ def test_load_cookie_header_accepts_txt_path_in_cookie(tmp_path: Path) -> None:
     assert header == "sessionid=abc"
 
 
+def test_load_cookie_header_merges_cf_clearance(tmp_path: Path) -> None:
+    cookie_file = tmp_path / "cookies.txt"
+    cookie_file.write_text(
+        ".chaturbate.com\tTRUE\t/\tTRUE\t2147483647\tcf_clearance\told\n"
+        ".chaturbate.com\tTRUE\t/\tTRUE\t2147483647\tsessionid\tabc",
+        encoding="utf-8",
+    )
+
+    header = load_cookie_header(None, cookie_file, cf_clearance="fresh")
+
+    assert header == "sessionid=abc; cf_clearance=fresh"
+
+
 def test_load_cookie_header_requires_source() -> None:
     with pytest.raises(AuthRequiredError):
         load_cookie_header(None, None)

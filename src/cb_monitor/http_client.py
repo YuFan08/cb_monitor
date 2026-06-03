@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ import httpx
 from loguru import logger
 from tenacity import (
     AsyncRetrying,
+    retry_if_exception,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
@@ -19,6 +21,10 @@ from tenacity import (
 
 from cb_monitor.config import Settings
 from cb_monitor.cookies import load_cookie_header
+from cb_monitor.errors import CloudflareChallengeError
+
+CHROME_MAJOR_RE = re.compile(r"(?:Chrome|Chromium)/(?P<major>\d+)")
+HTTP_FORBIDDEN = 403
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,42 +35,61 @@ class HttpClient:
     retry_attempts: int
     headers: dict[str, str]
     timeout: httpx.Timeout
+    has_explicit_proxy: bool = False
 
-    async def get_text(self, url: str, *, use_system_proxy: bool = False) -> str:
+    async def get_text(
+        self,
+        url: str,
+        *,
+        use_system_proxy: bool = False,
+        extra_headers: dict[str, str] | None = None,
+    ) -> str:
         """Fetch text with retry on transient HTTP failures."""
         retrying = AsyncRetrying(
             reraise=True,
             stop=stop_after_attempt(self.retry_attempts),
             wait=wait_exponential(multiplier=0.5, min=0.5, max=4.0),
-            retry=retry_if_exception_type(
-                (
-                    httpx.ConnectError,
-                    httpx.ConnectTimeout,
-                    httpx.ReadTimeout,
-                    httpx.RemoteProtocolError,
-                    httpx.HTTPStatusError,
+            retry=(
+                retry_if_exception_type(
+                    (
+                        httpx.ConnectError,
+                        httpx.ConnectTimeout,
+                        httpx.ReadTimeout,
+                        httpx.RemoteProtocolError,
+                    )
                 )
+                | retry_if_exception(_is_retryable_status_error)
             ),
         )
 
         async for attempt in retrying:
             with attempt:
                 logger.debug("HTTP GET {}", _safe_url(url))
-                response = await self._get(url, use_system_proxy=use_system_proxy)
-                response.raise_for_status()
+                response = await self._get(
+                    url,
+                    use_system_proxy=use_system_proxy,
+                    extra_headers=extra_headers,
+                )
+                _raise_for_blocked_or_bad_response(response)
                 return response.text
 
         msg = f"Request retry loop exited unexpectedly: {url}"
         raise httpx.RequestError(msg)
 
-    async def _get(self, url: str, *, use_system_proxy: bool) -> httpx.Response:
-        if not use_system_proxy:
-            return await self.client.get(url)
+    async def _get(
+        self,
+        url: str,
+        *,
+        use_system_proxy: bool,
+        extra_headers: dict[str, str] | None,
+    ) -> httpx.Response:
+        if not use_system_proxy or self.has_explicit_proxy:
+            return await self.client.get(url, headers=extra_headers)
 
         proxy = _system_proxy_for_url(url)
         if proxy is None:
             logger.warning("未检测到系统代理, 将直接请求: {}", _safe_url(url))
-            return await self.client.get(url)
+            return await self.client.get(url, headers=extra_headers)
 
         logger.debug("使用系统代理请求: {}", _safe_url(url))
         async with httpx.AsyncClient(
@@ -73,7 +98,7 @@ class HttpClient:
             follow_redirects=True,
             proxy=proxy,
         ) as proxy_client:
-            return await proxy_client.get(url)
+            return await proxy_client.get(url, headers=extra_headers)
 
 
 @asynccontextmanager
@@ -82,29 +107,54 @@ async def create_http_client(settings: Settings) -> AsyncGenerator[HttpClient]:
     cookie_header = load_cookie_header(
         settings.cookie.get_secret_value() if settings.cookie is not None else None,
         settings.cookie_file,
+        cf_clearance=(
+            settings.cf_clearance.get_secret_value()
+            if settings.cf_clearance is not None
+            else None
+        ),
     )
+    chrome_major = _chrome_major_version(settings.user_agent)
     headers = {
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "accept-language": "en-US,en;q=0.9",
+        "accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
+            "image/webp,image/apng,*/*;q=0.8"
+        ),
+        "accept-language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
         "cache-control": "no-cache",
         "cookie": cookie_header,
         "pragma": "no-cache",
         "referer": f"{settings.base_url}{settings.followed_path}",
+        "sec-ch-ua": (
+            f'"Chromium";v="{chrome_major}", '
+            f'"Google Chrome";v="{chrome_major}", '
+            '"Not.A/Brand";v="24"'
+        ),
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-user": "?1",
         "upgrade-insecure-requests": "1",
         "user-agent": settings.user_agent,
     }
     timeout = httpx.Timeout(settings.timeout_seconds)
+    proxy = settings.proxy_url
+    if proxy is not None:
+        logger.info("使用显式代理: {}", _safe_proxy_url(proxy))
 
     async with httpx.AsyncClient(
         headers=headers,
         timeout=timeout,
         follow_redirects=True,
+        proxy=proxy,
     ) as client:
         yield HttpClient(
             client=client,
             retry_attempts=settings.retry_attempts,
             headers=headers,
             timeout=timeout,
+            has_explicit_proxy=proxy is not None,
         )
 
 
@@ -129,3 +179,52 @@ def _safe_url(url: str) -> str:
         ]
     )
     return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
+
+
+def _chrome_major_version(user_agent: str) -> str:
+    match = CHROME_MAJOR_RE.search(user_agent)
+    return match.group("major") if match is not None else "125"
+
+
+def _safe_proxy_url(proxy_url: str) -> str:
+    parts = urlsplit(proxy_url)
+    if not parts.username and not parts.password:
+        return proxy_url
+
+    host = parts.hostname or ""
+    port = f":{parts.port}" if parts.port is not None else ""
+    netloc = f"***:***@{host}{port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def _is_retryable_status_error(exc: BaseException) -> bool:
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return False
+    return exc.response.status_code in {408, 425, 429, 500, 502, 503, 504}
+
+
+def _raise_for_blocked_or_bad_response(response: httpx.Response) -> None:
+    if response.status_code == HTTP_FORBIDDEN:
+        _raise_cloudflare_challenge(response)
+    if _looks_like_cloudflare_challenge(response):
+        _raise_cloudflare_challenge(response)
+    response.raise_for_status()
+
+
+def _raise_cloudflare_challenge(response: httpx.Response) -> None:
+    msg = (
+        "Cloudflare 已拦截当前会话。请在同一日本节点的 Chrome 中完成验证, "
+        "导出包含 cf_clearance 的 chaturbate.com Cookie, 并确保 CB_USER_AGENT "
+        "与该 Chrome 完全一致。"
+    )
+    raise CloudflareChallengeError(msg)
+
+
+def _looks_like_cloudflare_challenge(response: httpx.Response) -> bool:
+    text = response.text[:4096].lower()
+    return (
+        "cf_clearance" in text
+        or "challenge-platform" in text
+        or "checking your browser" in text
+        or "just a moment" in text
+    )

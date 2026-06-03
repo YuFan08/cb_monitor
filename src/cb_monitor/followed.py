@@ -21,7 +21,6 @@ class FollowedRoom(BaseModel):
     model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
 
     username: str = Field(min_length=1, max_length=64)
-    current_show: str | None = None
     is_following: bool = True
 
 
@@ -37,10 +36,23 @@ async def fetch_followed_streamers(
     client: HttpClient, base_url: str, path: str
 ) -> list[Streamer]:
     """Fetch and parse live followed streamers."""
-    html = await client.get_text(urljoin(base_url, path))
+    followed_url = urljoin(base_url, path)
+    html = await client.get_text(followed_url, use_system_proxy=True)
     ensure_authenticated(html)
 
-    api_text = await client.get_text(urljoin(base_url, FOLLOWED_ROOMLIST_PATH))
+    api_text = await client.get_text(
+        urljoin(base_url, FOLLOWED_ROOMLIST_PATH),
+        use_system_proxy=True,
+        extra_headers={
+            "accept": "application/json, text/plain, */*",
+            "origin": base_url.rstrip("/"),
+            "referer": followed_url,
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
+            "upgrade-insecure-requests": "0",
+        },
+    )
     return parse_followed_roomlist(api_text, base_url)
 
 

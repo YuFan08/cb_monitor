@@ -9,18 +9,25 @@ from cb_monitor.errors import AuthRequiredError
 NETSCAPE_COOKIE_FIELD_COUNT = 7
 
 
-def load_cookie_header(cookie: str | None, cookie_file: Path | None) -> str:
+def load_cookie_header(
+    cookie: str | None,
+    cookie_file: Path | None,
+    *,
+    cf_clearance: str | None = None,
+) -> str:
     """Load a Cookie header from direct text or a Netscape cookies.txt file."""
     if cookie:
         normalized = cookie.strip().strip("\"'")
         if _has_cookie_pairs(normalized):
-            return normalized
+            return _merge_cf_clearance(normalized, cf_clearance)
         if _looks_like_cookie_file(normalized):
-            return parse_netscape_cookie_file(Path(normalized))
+            return _merge_cf_clearance(
+                parse_netscape_cookie_file(Path(normalized)), cf_clearance
+            )
     if cookie_file is None:
         msg = "请设置 CB_COOKIE 或 CB_COOKIE_FILE。"
         raise AuthRequiredError(msg)
-    return parse_netscape_cookie_file(cookie_file)
+    return _merge_cf_clearance(parse_netscape_cookie_file(cookie_file), cf_clearance)
 
 
 def parse_netscape_cookie_file(path: Path) -> str:
@@ -80,3 +87,18 @@ def _looks_like_cookie_file(value: str) -> bool:
         return False
     path = Path(value)
     return path.suffix.lower() == ".txt" or path.exists()
+
+
+def _merge_cf_clearance(cookie_header: str, cf_clearance: str | None) -> str:
+    token = cf_clearance.strip().strip("\"'") if cf_clearance is not None else ""
+    if not token:
+        return cookie_header
+
+    pairs = [
+        part.strip()
+        for part in cookie_header.split(";")
+        if part.strip()
+        and part.split("=", maxsplit=1)[0].strip().lower() != "cf_clearance"
+    ]
+    pairs.append(f"cf_clearance={token}")
+    return "; ".join(pairs)

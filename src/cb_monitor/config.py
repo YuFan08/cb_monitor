@@ -21,19 +21,27 @@ class Settings(BaseSettings):
 
     cookie: SecretStr | None = None
     cookie_file: Path | None = None
+    cf_clearance: SecretStr | None = None
     user_agent: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
     )
     timeout_seconds: float = Field(default=15.0, gt=0.0, le=60.0)
     retry_attempts: int = Field(default=3, ge=1, le=8)
+    proxy_url: str | None = None
     mpv_path: str = Field(default="mpv", min_length=1)
     log_level: str = Field(default="INFO", min_length=1)
     base_url: str = "https://chaturbate.com"
     followed_path: str = "/followed-cams/"
     log_file: Path | None = None
 
-    @field_validator("cookie", "cookie_file", mode="before")
+    @field_validator(
+        "cookie",
+        "cookie_file",
+        "cf_clearance",
+        "proxy_url",
+        mode="before",
+    )
     @classmethod
     def empty_string_as_none(cls, value: Any) -> Any:
         """Treat blank .env values as unset to support example files."""

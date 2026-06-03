@@ -12,7 +12,6 @@ class Streamer(BaseModel):
 
     username: str = Field(min_length=1, max_length=64)
     room_url: str = Field(pattern=r"^https://.+")
-    is_live: bool = True
 
     @field_validator("username")
     @classmethod

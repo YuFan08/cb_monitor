@@ -9,6 +9,10 @@ class AuthRequiredError(CbMonitorError):
     """Raised when authenticated Chaturbate access is not configured or expired."""
 
 
+class CloudflareChallengeError(CbMonitorError):
+    """Raised when Cloudflare rejects the current browser session."""
+
+
 class EmptyFollowedListError(CbMonitorError):
     """Raised when no followed live rooms can be parsed."""
 

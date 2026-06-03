@@ -8,8 +8,8 @@ def test_parse_followed_roomlist_from_api_json() -> None:
     api_text = """
     {
       "rooms": [
-        {"username": "xxx_leila", "current_show": "public", "is_following": true},
-        {"username": "lovepill", "current_show": "private", "is_following": true}
+        {"username": "xxx_leila", "is_following": true},
+        {"username": "lovepill", "is_following": true}
       ]
     }
     """
